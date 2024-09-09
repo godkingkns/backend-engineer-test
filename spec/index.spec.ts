@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, beforeAll, afterAll } from "bun:test";
 import Fastify from "fastify";
+import type { Agent } from "supertest";
+import supertest from "supertest";
 import blockRoutes from "../src/routes/blockRoutes";
 import balanceRoutes from "../src/routes/balanceRoutes";
 import rollbackRoutes from "../src/routes/rollbackRoutes";
@@ -7,6 +9,7 @@ import { pool } from "../src/db/connection"; // Ensure this points to your actua
 
 // Fastify instance
 let fastify: ReturnType<typeof Fastify>;
+let request: Agent; // Initialize supertest
 
 // Helper function to reset the database between tests
 async function resetDatabase() {
@@ -57,6 +60,7 @@ beforeAll(async () => {
 
   // Wait for Fastify to be fully initialized before tests
   await fastify.ready();
+  request = supertest(fastify.server); // Use supertest with Fastify's HTTP server
 
   await createDatabase();
 })
@@ -88,26 +92,19 @@ describe("POST /blocks - valid block submission", () => {
     };
 
     // Simulate a POST request to /blocks
-    const response = await fastify.inject({
-      method: "POST",
-      url: "/blocks",
-      payload: validBlock,
-    });
+    const response = await request.post("/blocks").send(validBlock);
 
     // Assert that the status code is 200 (success)
     expect(response.statusCode).toBe(200);
 
     // Assert that the response body contains the expected success message
-    expect(JSON.parse(response.body)).toEqual({ success: true });
+    expect(response.body).toEqual({ success: true });
 
     // Check if the balance is correctly updated for addr1
-    const balanceResponse = await fastify.inject({
-      method: "GET",
-      url: "/balance/addr1",
-    });
+    const balanceResponse = await request.get("/balance/addr1");
 
     // Assert that addr1 has a balance of 10
-    expect(JSON.parse(balanceResponse.body)).toEqual({ balance: 10 });
+    expect(balanceResponse.body).toEqual({ balance: 10 });
   });
 });
 
@@ -126,17 +123,13 @@ describe("POST /blocks - invalid block height", () => {
       ],
     };
 
-    const response = await fastify.inject({
-      method: "POST",
-      url: "/blocks",
-      payload: invalidBlock,
-    });
+    const response = await request.post("/blocks").send(invalidBlock);
 
     // Assert that the status code is 400 (bad request)
     expect(response.statusCode).toBe(400);
 
     // Assert that the response body contains the expected error message
-    expect(JSON.parse(response.body)).toEqual({ error: "Invalid block height" });
+    expect(response.body).toEqual({ error: "Invalid block height" });
   });
 });
 
@@ -168,24 +161,16 @@ describe("POST /blocks - input/output value mismatch", () => {
     };
 
     // Submit the first valid block
-    await fastify.inject({
-      method: "POST",
-      url: "/blocks",
-      payload: validBlock1,
-    });
+    await request.post("/blocks").send(validBlock1);
 
     // Simulate POST request to /blocks with value mismatch
-    const response = await fastify.inject({
-      method: "POST",
-      url: "/blocks",
-      payload: invalidBlock2,
-    });
+    const response = await request.post("/blocks").send(invalidBlock2);
 
     // Assert that the status code is 400 (bad request)
     expect(response.statusCode).toBe(400);
 
     // Assert that the response body contains the expected error message
-    expect(JSON.parse(response.body)).toEqual({ error: "Input and output values do not match" });
+    expect(response.body).toEqual({ error: "Input and output values do not match" });
   });
 });
 
@@ -217,53 +202,33 @@ describe("POST /rollback - rollback a block", () => {
     };
 
     // Submit both valid blocks
-    await fastify.inject({
-      method: "POST",
-      url: "/blocks",
-      payload: validBlock1,
-    });
+    await request.post("/blocks").send(validBlock1);
 
-    await fastify.inject({
-      method: "POST",
-      url: "/blocks",
-      payload: validBlock2,
-    });
+    await request.post("/blocks").send(validBlock2);
 
     // Perform rollback to height 1
-    const rollbackResponse = await fastify.inject({
-      method: "POST",
-      url: "/rollback?height=1",
-    });
+    const rollbackResponse = await request.post("/rollback?height=1");
 
     // Assert rollback success
     expect(rollbackResponse.statusCode).toBe(200);
-    expect(JSON.parse(rollbackResponse.body)).toEqual({ success: true });
+    expect(rollbackResponse.body).toEqual({ success: true });
 
     // Verify that addr1 balance is restored and addr2 balance is reset
-    const balanceResponseAddr1 = await fastify.inject({
-      method: "GET",
-      url: "/balance/addr1",
-    });
-    expect(JSON.parse(balanceResponseAddr1.body)).toEqual({ balance: 10 });
+    const balanceResponseAddr1 = await request.get("/balance/addr1");
+    expect(balanceResponseAddr1.body).toEqual({ balance: 10 });
 
-    const balanceResponseAddr2 = await fastify.inject({
-      method: "GET",
-      url: "/balance/addr2",
-    });
-    expect(JSON.parse(balanceResponseAddr2.body)).toEqual({ balance: 0 });
+    const balanceResponseAddr2 = await request.get("/balance/addr2");
+    expect(balanceResponseAddr2.body).toEqual({ balance: 0 });
   });
 });
 
 // Test case: GET /balance/:address - unknown address should return balance 0
 describe("GET /balance/:address - unknown address should return balance 0", () => {
   it("should return a balance of 0 for unknown address", async () => {
-    const response = await fastify.inject({
-      method: "GET",
-      url: "/balance/unknownAddress",
-    });
+    const response = await request.get("/balance/unknownAddress");
 
     // Assert that the balance is 0 for an unknown address
     expect(response.statusCode).toBe(200);
-    expect(JSON.parse(response.body)).toEqual({ balance: 0 });
+    expect(response.body).toEqual({ balance: 0 });
   });
 });
