@@ -1,60 +1,269 @@
-import { test, expect } from 'bun:test';
-import Fastify from 'fastify';
-import { pool } from '../db/connection';
-import blockRoutes from '../routes/blockRoutes';
-import balanceRoutes from '../routes/balanceRoutes';
-import rollbackRoutes from '../routes/rollbackRoutes';
+import { describe, it, expect, beforeEach, beforeAll, afterAll } from "bun:test";
+import Fastify from "fastify";
+import blockRoutes from "../src/routes/blockRoutes";
+import balanceRoutes from "../src/routes/balanceRoutes";
+import rollbackRoutes from "../src/routes/rollbackRoutes";
+import { pool } from "../src/db/connection"; // Ensure this points to your actual DB connection
 
-const fastify = Fastify();
-fastify.register(blockRoutes);
-fastify.register(balanceRoutes);
-fastify.register(rollbackRoutes);
+// Fastify instance
+let fastify: ReturnType<typeof Fastify>;
 
-test('POST /blocks - valid block', async () => {
-  const validBlock = {
-    id: 'block1',
-    height: 1,
-    transactions: [
-      {
-        id: 'tx1',
-        inputs: [],
-        outputs: [{ address: 'addr1', value: 10 }]
-      }
-    ]
-  };
+// Helper function to reset the database between tests
+async function resetDatabase() {
+  await pool.query("TRUNCATE blocks, transactions, inputs, outputs, balances RESTART IDENTITY CASCADE");
+}
 
-  const response = await fastify.inject({
-    method: 'POST',
-    url: '/blocks',
-    payload: validBlock
-  });
+async function createDatabase() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS blocks (
+      id TEXT PRIMARY KEY,
+      height INT NOT NULL
+    );
+    
+    CREATE TABLE IF NOT EXISTS transactions (
+      id TEXT PRIMARY KEY,
+      block_id TEXT REFERENCES blocks(id) ON DELETE CASCADE
+    );
+    
+    CREATE TABLE IF NOT EXISTS inputs (
+      tx_id TEXT REFERENCES transactions(id) ON DELETE CASCADE,
+      index INT,
+      ref_tx_id TEXT,
+      PRIMARY KEY (tx_id, index)
+    );
+    
+    CREATE TABLE IF NOT EXISTS outputs (
+      tx_id TEXT REFERENCES transactions(id) ON DELETE CASCADE,
+      address TEXT,
+      value INT,
+      index INT,
+      PRIMARY KEY (tx_id, index)
+    );
+    
+    CREATE TABLE IF NOT EXISTS balances (
+      address TEXT PRIMARY KEY,
+      balance INT
+    );
+  `);
+}
 
-  expect(response.statusCode).toBe(200);
-  expect(JSON.parse(response.body)).toEqual({ success: true });
+beforeAll(async () => {
+  fastify = Fastify();
+  
+  // Register routes
+  fastify.register(blockRoutes);
+  fastify.register(balanceRoutes);
+  fastify.register(rollbackRoutes);
 
-  const { rows } = await pool.query(`SELECT balance FROM balances WHERE address = 'addr1';`);
-  expect(rows[0].balance).toBe(10);
+  // Wait for Fastify to be fully initialized before tests
+  await fastify.ready();
+
+  await createDatabase();
+})
+
+// Tear down Fastify after each test
+afterAll(async () => {
+  await fastify.close();
 });
 
-test('GET /balance/:address - address with balance', async () => {
-  const response = await fastify.inject({
-    method: 'GET',
-    url: '/balance/addr1',
-  });
-
-  expect(response.statusCode).toBe(200);
-  expect(JSON.parse(response.body)).toEqual({ balance: 10 });
+// Setup Fastify before each test
+beforeEach(async () => {
+  // Reset database to clean state
+  await resetDatabase();
 });
 
-test('POST /rollback - rollback to previous block', async () => {
-  const rollbackResponse = await fastify.inject({
-    method: 'POST',
-    url: '/rollback?height=0'
+// Test case: POST /blocks - valid block submission
+describe("POST /blocks - valid block submission", () => {
+  it("should submit a valid block and update balance", async () => {
+    const validBlock = {
+      id: "valid_block_id",
+      height: 1,
+      transactions: [
+        {
+          id: "tx1",
+          inputs: [],
+          outputs: [{ address: "addr1", value: 10 }],
+        },
+      ],
+    };
+
+    // Simulate a POST request to /blocks
+    const response = await fastify.inject({
+      method: "POST",
+      url: "/blocks",
+      payload: validBlock,
+    });
+
+    // Assert that the status code is 200 (success)
+    expect(response.statusCode).toBe(200);
+
+    // Assert that the response body contains the expected success message
+    expect(JSON.parse(response.body)).toEqual({ success: true });
+
+    // Check if the balance is correctly updated for addr1
+    const balanceResponse = await fastify.inject({
+      method: "GET",
+      url: "/balance/addr1",
+    });
+
+    // Assert that addr1 has a balance of 10
+    expect(JSON.parse(balanceResponse.body)).toEqual({ balance: 10 });
   });
+});
 
-  expect(rollbackResponse.statusCode).toBe(200);
-  expect(JSON.parse(rollbackResponse.body)).toEqual({ success: true });
+// Test case: POST /blocks - invalid block height
+describe("POST /blocks - invalid block height", () => {
+  it("should return 400 when block height is invalid", async () => {
+    const invalidBlock = {
+      id: "invalid_block_id",
+      height: 2, // Invalid height: first block should have height 1
+      transactions: [
+        {
+          id: "tx1",
+          inputs: [],
+          outputs: [{ address: "addr1", value: 10 }],
+        },
+      ],
+    };
 
-  const { rows } = await pool.query(`SELECT balance FROM balances WHERE address = 'addr1';`);
-  expect(rows[0].balance).toBe(0);
+    const response = await fastify.inject({
+      method: "POST",
+      url: "/blocks",
+      payload: invalidBlock,
+    });
+
+    // Assert that the status code is 400 (bad request)
+    expect(response.statusCode).toBe(400);
+
+    // Assert that the response body contains the expected error message
+    expect(JSON.parse(response.body)).toEqual({ error: "Invalid block height" });
+  });
+});
+
+// Test case: POST /blocks - input/output value mismatch
+describe("POST /blocks - input/output value mismatch", () => {
+  it("should return 400 when input and output values do not match", async () => {
+    const validBlock1 = {
+      id: "block1",
+      height: 1,
+      transactions: [
+        {
+          id: "tx1",
+          inputs: [],
+          outputs: [{ address: "addr1", value: 10 }],
+        },
+      ],
+    };
+
+    const invalidBlock2 = {
+      id: "block2",
+      height: 2,
+      transactions: [
+        {
+          id: "tx2",
+          inputs: [{ txId: "tx1", index: 0 }],
+          outputs: [{ address: "addr2", value: 8 }], // Mismatch: input = 10, output = 8
+        },
+      ],
+    };
+
+    // Submit the first valid block
+    await fastify.inject({
+      method: "POST",
+      url: "/blocks",
+      payload: validBlock1,
+    });
+
+    // Simulate POST request to /blocks with value mismatch
+    const response = await fastify.inject({
+      method: "POST",
+      url: "/blocks",
+      payload: invalidBlock2,
+    });
+
+    // Assert that the status code is 400 (bad request)
+    expect(response.statusCode).toBe(400);
+
+    // Assert that the response body contains the expected error message
+    expect(JSON.parse(response.body)).toEqual({ error: "Input and output values do not match" });
+  });
+});
+
+// Test case: POST /rollback - rollback a block
+describe("POST /rollback - rollback a block", () => {
+  it("should rollback the blockchain to a given height", async () => {
+    const validBlock1 = {
+      id: "block1",
+      height: 1,
+      transactions: [
+        {
+          id: "tx1",
+          inputs: [],
+          outputs: [{ address: "addr1", value: 10 }],
+        },
+      ],
+    };
+
+    const validBlock2 = {
+      id: "block2",
+      height: 2,
+      transactions: [
+        {
+          id: "tx2",
+          inputs: [{ txId: "tx1", index: 0 }],
+          outputs: [{ address: "addr2", value: 10 }],
+        },
+      ],
+    };
+
+    // Submit both valid blocks
+    await fastify.inject({
+      method: "POST",
+      url: "/blocks",
+      payload: validBlock1,
+    });
+
+    await fastify.inject({
+      method: "POST",
+      url: "/blocks",
+      payload: validBlock2,
+    });
+
+    // Perform rollback to height 1
+    const rollbackResponse = await fastify.inject({
+      method: "POST",
+      url: "/rollback?height=1",
+    });
+
+    // Assert rollback success
+    expect(rollbackResponse.statusCode).toBe(200);
+    expect(JSON.parse(rollbackResponse.body)).toEqual({ success: true });
+
+    // Verify that addr1 balance is restored and addr2 balance is reset
+    const balanceResponseAddr1 = await fastify.inject({
+      method: "GET",
+      url: "/balance/addr1",
+    });
+    expect(JSON.parse(balanceResponseAddr1.body)).toEqual({ balance: 10 });
+
+    const balanceResponseAddr2 = await fastify.inject({
+      method: "GET",
+      url: "/balance/addr2",
+    });
+    expect(JSON.parse(balanceResponseAddr2.body)).toEqual({ balance: 0 });
+  });
+});
+
+// Test case: GET /balance/:address - unknown address should return balance 0
+describe("GET /balance/:address - unknown address should return balance 0", () => {
+  it("should return a balance of 0 for unknown address", async () => {
+    const response = await fastify.inject({
+      method: "GET",
+      url: "/balance/unknownAddress",
+    });
+
+    // Assert that the balance is 0 for an unknown address
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({ balance: 0 });
+  });
 });
