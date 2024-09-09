@@ -13,4 +13,4 @@ RUN bun install
 EXPOSE 3000
 
 # Define the command to run the app
-CMD ["bun", "test"]
+ENTRYPOINT bun start
