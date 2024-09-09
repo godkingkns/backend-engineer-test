@@ -19,6 +19,27 @@ export async function processBlock(block: Block) {
 
       // Insert inputs and outputs
       for (const input of tx.inputs) {
+        // Get the address of the original output being spent
+        const { rows: inputOutput } = await client.query(`
+          SELECT address, value FROM outputs WHERE tx_id = $1 AND index = $2
+        `, [input.txId, input.index]);
+
+        if (inputOutput.length === 0) {
+          throw new Error('Referenced input does not exist');
+        }
+
+        const { address, value } = inputOutput[0];
+
+        // Deduct the value from the address' balance
+        const { rows: balanceRows } = await client.query(`
+          SELECT balance FROM balances WHERE address = $1
+        `, [address]);
+
+        let newBalance = balanceRows.length ? balanceRows[0].balance - value : 0;
+
+        await client.query(updateBalanceQuery, [address, newBalance]);
+
+        // Insert input record
         await client.query(insertInputQuery, [tx.id, input.index, input.txId]);
       }
 

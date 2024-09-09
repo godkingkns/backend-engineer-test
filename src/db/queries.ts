@@ -38,6 +38,25 @@ export const recalculateBalanceQuery = `
 `;
 
 export const getSpentSumQuery = `
-  SELECT SUM(value) as total_spent
-  FROM inputs WHERE ref_tx_id IN (SELECT tx_id FROM outputs WHERE address = $1);
+  SELECT SUM(o.value) as total_spent
+  FROM inputs i
+  JOIN outputs o ON i.ref_tx_id = o.tx_id AND i.index = o.index
+  WHERE o.address = $1;
 `;
+
+export const getImpactAddressQuery = `
+  SELECT DISTINCT o.address
+  FROM outputs o
+  JOIN transactions t ON o.tx_id = t.id
+  JOIN blocks b ON t.block_id = b.id
+  WHERE b.height > $1
+  
+  UNION
+  
+  SELECT DISTINCT o2.address
+  FROM inputs i
+  JOIN outputs o2 ON i.ref_tx_id = o2.tx_id AND i.index = o2.index
+  JOIN transactions t2 ON i.tx_id = t2.id
+  JOIN blocks b2 ON t2.block_id = b2.id
+  WHERE b2.height > $1;
+`
