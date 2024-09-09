@@ -1,64 +1,25 @@
 import Fastify from 'fastify';
-import { Pool } from 'pg';
-import { randomUUID } from 'crypto';
+import blockRoutes from './routes/blockRoutes';
+import balanceRoutes from './routes/balanceRoutes';
+import rollbackRoutes from './routes/rollbackRoutes';
+import { createTablesQuery } from './db/queries';
+import { pool } from './db/connection';
 
+// Define Fastify instance
 const fastify = Fastify({ logger: true });
 
-fastify.get('/', async (request, reply) => {
-  return { hello: 'world' };
-});
+// Register routes
+fastify.register(blockRoutes);
+fastify.register(balanceRoutes);
+fastify.register(rollbackRoutes);
 
-async function testPostgres(pool: Pool) {
-  const id = randomUUID();
-  const name = 'Satoshi';
-  const email = 'Nakamoto';
-
-  await pool.query(`DELETE FROM users;`);
-
-  await pool.query(`
-    INSERT INTO users (id, name, email)
-    VALUES ($1, $2, $3);
-  `, [id, name, email]);
-
-  const { rows } = await pool.query(`
-    SELECT * FROM users;
-  `);
-
-  console.log('USERS', rows);
-}
-
-async function createTables(pool: Pool) {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS users (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      email TEXT NOT NULL
-    );
-  `);
-}
-
-async function bootstrap() {
-  console.log('Bootstrapping...');
-  const databaseUrl = process.env.DATABASE_URL;
-  if (!databaseUrl) {
-    throw new Error('DATABASE_URL is required');
+// Bootstrap the application and start the server
+(async function bootstrap() {
+  try {
+    await pool.query(createTablesQuery); // Create tables
+    await fastify.listen({ port: 3000, host: '0.0.0.0' });
+  } catch (err) {
+    fastify.log.error(err);
+    process.exit(1);
   }
-
-  const pool = new Pool({
-    connectionString: databaseUrl
-  });
-
-  await createTables(pool);
-  await testPostgres(pool);
-}
-
-try {
-  await bootstrap();
-  await fastify.listen({
-    port: 3000,
-    host: '0.0.0.0'
-  })
-} catch (err) {
-  fastify.log.error(err)
-  process.exit(1)
-};
+})();
